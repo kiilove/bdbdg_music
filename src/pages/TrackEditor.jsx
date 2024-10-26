@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   Spin,
   Input,
@@ -20,18 +20,18 @@ import {
   UploadOutlined,
   PlayCircleOutlined,
   PlaySquareOutlined,
-  PlusOutlined,
-  DeleteOutlined,
 } from "@ant-design/icons";
 import useFirebaseStorage from "../hooks/useFirebaseStorage";
-import { useFirestoreAddData } from "../hooks/useFirestores";
+import {
+  useFirestoreUpdateData,
+  useFirestoreGetDocument,
+} from "../hooks/useFirestores";
 import dayjs from "dayjs";
 
 const { Option } = Select;
 
-const AudioEditor = () => {
-  const location = useLocation();
-  const { audioUrl } = location.state || {};
+const TrackEditor = () => {
+  const { trackId } = useParams();
   const [isLoading, setIsLoading] = useState(true);
   const [duration, setDuration] = useState(0);
   const [startTime, setStartTime] = useState(0);
@@ -46,90 +46,94 @@ const AudioEditor = () => {
   const regions = useRef(null);
   const resizeRegion = useRef(null);
   const [form] = Form.useForm();
-  // 업로드된 파일 URL을 가져오기 위한 useFirebaseStorage 훅 사용
-  const { urls, progress, uploadFiles } = useFirebaseStorage("album_art");
-  const addTrack = useFirestoreAddData("tracks");
+
+  const { urls, uploadFiles } = useFirebaseStorage("album_art");
+  const { getDocument, data: trackData } = useFirestoreGetDocument("tracks");
+  const { updateData } = useFirestoreUpdateData("tracks");
 
   useEffect(() => {
-    if (!audioUrl) {
-      console.error("오디오 URL이 유효하지 않습니다.");
-      setIsLoading(false);
-      return;
+    if (trackId) {
+      getDocument(trackId).then((docData) => {
+        if (docData) {
+          initializeForm(docData);
+          loadWaveform(docData.path, docData.startTime, docData.endTime);
+        } else {
+          message.error("데이터를 불러오지 못했습니다.");
+        }
+      });
     }
+  }, [trackId]);
 
-    // 파일 이름 추출 및 확장자 제거
-    const extractFileName = (url) => {
-      const decodedUrl = decodeURIComponent(url);
-      const parts = decodedUrl.split("/");
-      const fullName = parts[parts.length - 1].split("?")[0];
-      return fullName.replace(/\.[^/.]+$/, ""); // 확장자 제거
-    };
+  const initializeForm = (data) => {
+    form.setFieldsValue({
+      title: data.title,
+      genres: data.genres,
+      language: data.language,
+    });
+    setFileName(data.title);
+    setStartTime(data.startTime || 0);
+    setEndTime(data.endTime || data.duration || 0);
+    setLyrics(data.lyrics.map((lyric) => lyric.line).join("\n"));
+    setTimelineEnabled(data.isLyricsTimeline || false);
+    setEditableLyrics(data.lyrics || []);
+    setAlbumArt(data.albumArt);
+  };
 
-    const fileNameFromUrl = extractFileName(audioUrl);
-    setFileName(fileNameFromUrl);
-    form.setFieldsValue({ title: fileNameFromUrl });
-
-    const initWavesurfer = async () => {
-      try {
-        console.log("wavesurfer 초기화 시작");
-
-        regions.current = RegionsPlugin.create();
-
-        wavesurfer.current = WaveSurfer.create({
-          container: waveformRef.current,
-          waveColor: "rgb(200, 0, 200)",
-          progressColor: "rgb(100, 0, 100)",
-          plugins: [regions.current],
-        });
-
-        wavesurfer.current.on("ready", () => {
-          console.log("wavesurfer 로딩 완료");
-          setIsLoading(false);
-          const audioDuration = wavesurfer.current.getDuration();
-          setDuration(audioDuration);
-
-          regions.current.clearRegions();
-
-          resizeRegion.current = regions.current.addRegion({
-            start: 0,
-            end: audioDuration,
-            content: "재생구간선택",
-            color: "rgba(0, 255, 0, 0.1)",
-            drag: false,
-            resize: true,
-          });
-
-          setStartTime(0);
-          setEndTime(audioDuration);
-        });
-
-        wavesurfer.current.on("error", (error) => {
-          console.error("wavesurfer 에러:", error);
-          setIsLoading(false);
-        });
-
-        regions.current.on("region-updated", (region) => {
-          if (region === resizeRegion.current) {
-            setStartTime(region.start);
-            setEndTime(region.end);
-          }
-        });
-
-        await wavesurfer.current.load(audioUrl);
-      } catch (error) {
-        console.error("wavesurfer 초기화 중 오류 발생:", error);
-        setIsLoading(false);
+  const loadWaveform = async (audioPath, start, end) => {
+    try {
+      if (!audioPath) {
+        throw new Error("오디오 경로가 유효하지 않습니다.");
       }
-    };
 
-    initWavesurfer();
-
-    return () => {
+      // 기존의 wavesurfer 인스턴스를 파괴하여 중복 방지
       if (wavesurfer.current) {
         wavesurfer.current.destroy();
       }
-    };
-  }, [audioUrl, form]);
+
+      regions.current = RegionsPlugin.create();
+      wavesurfer.current = WaveSurfer.create({
+        container: waveformRef.current,
+        waveColor: "rgb(200, 0, 200)",
+        progressColor: "rgb(100, 0, 100)",
+        plugins: [regions.current],
+      });
+
+      wavesurfer.current.on("ready", () => {
+        setIsLoading(false);
+        const audioDuration = wavesurfer.current.getDuration();
+        setDuration(audioDuration);
+
+        // 시작과 끝 위치를 설정한 Region 생성
+        resizeRegion.current = regions.current.addRegion({
+          start: start || 0,
+          end: end || audioDuration,
+          content: "재생구간선택",
+          color: "rgba(0, 255, 0, 0.1)",
+          drag: false,
+          resize: true,
+        });
+        setStartTime(start || 0);
+        setEndTime(end || audioDuration);
+      });
+
+      wavesurfer.current.on("error", (error) => {
+        console.error("Wavesurfer error:", error);
+        setIsLoading(false);
+      });
+
+      regions.current.on("region-updated", (region) => {
+        if (region === resizeRegion.current) {
+          setStartTime(region.start);
+          setEndTime(region.end);
+        }
+      });
+
+      await wavesurfer.current.load(audioPath);
+    } catch (error) {
+      console.error("Waveform loading error:", error);
+      setIsLoading(false);
+    }
+  };
 
   const handlePlayPause = () => {
     if (wavesurfer.current) {
@@ -142,15 +146,11 @@ const AudioEditor = () => {
       wavesurfer.current.stop();
       wavesurfer.current.seekTo(startTime / duration);
       wavesurfer.current.play();
-
-      const checkEndTime = () => {
+      wavesurfer.current.on("audioprocess", () => {
         if (wavesurfer.current.getCurrentTime() >= endTime) {
           wavesurfer.current.pause();
-          wavesurfer.current.un("audioprocess", checkEndTime);
         }
-      };
-
-      wavesurfer.current.on("audioprocess", checkEndTime);
+      });
     }
   };
 
@@ -160,74 +160,21 @@ const AudioEditor = () => {
       .filter((line) => !line.startsWith("[") && !line.endsWith("]"));
     setLyrics(processedLyrics.join("\n"));
     setEditableLyrics(
-      processedLyrics.map((line) => ({
-        line,
-        start: 0,
-        end: 0,
-      }))
+      processedLyrics.map((line) => ({ line, start: 0, end: 0 }))
     );
   };
 
-  const handleAddRow = (index) => {
-    setEditableLyrics((prevLyrics) => {
-      const newRow = { line: "", start: 0, end: 0 };
-      const updatedLyrics = [...prevLyrics];
-      updatedLyrics.splice(index + 1, 0, newRow);
-      if (index >= 0 && index < prevLyrics.length) {
-        updatedLyrics[index + 1].start = updatedLyrics[index].end;
-      }
-      return updatedLyrics;
-    });
-  };
-
-  const handleDeleteRow = (index) => {
-    setEditableLyrics((prevLyrics) => {
-      const updatedLyrics = prevLyrics.filter((_, i) => i !== index);
-      if (index < updatedLyrics.length && index > 0) {
-        updatedLyrics[index].start = updatedLyrics[index - 1].end;
-      }
-      return updatedLyrics;
-    });
-  };
-
-  const handleResetLyrics = () => {
-    const processedLyrics = lyrics
-      .split("\n")
-      .filter((line) => line.trim() !== "");
-    setEditableLyrics(
-      processedLyrics.map((line) => ({
-        line,
-        start: 0,
-        end: 0,
-      }))
-    );
-  };
-
-  const handleEditableLyricsChange = (index, key, value) => {
-    setEditableLyrics((prevLyrics) =>
-      prevLyrics.map((lyric, i) => {
-        if (i === index) {
-          const updatedLyric = { ...lyric, [key]: value };
-          if (key === "end" && i < prevLyrics.length - 1) {
-            prevLyrics[i + 1].start = value;
-          }
-          return updatedLyric;
-        }
-        return lyric;
-      })
-    );
-  };
   const handleUploadAlbumArt = (file) => {
     setAlbumArt(file);
-    uploadFiles([file]); // 업로드 함수 호출
+    uploadFiles([file]);
     return false;
   };
 
   const handleSave = async (values) => {
-    const albumArtUrl = urls[0] || "/default/album_art.png";
+    const albumArtUrl = urls[0] || albumArt || "/default/album_art.png";
     const saveData = {
       title: values.title,
-      path: audioUrl,
+      path: trackData.path,
       genres: values.genres,
       language: values.language,
       albumArt: albumArtUrl,
@@ -235,38 +182,21 @@ const AudioEditor = () => {
       startTime,
       endTime,
       playingTime: (endTime - startTime).toFixed(2),
-      createdAt: dayjs(new Date()).format("YYYY-MM-DD HH:mm:ss"),
+      updatedAt: dayjs(new Date()).format("YYYY-MM-DD HH:mm:ss"),
       lyrics: timelineEnabled
         ? editableLyrics.map((lyric) => ({
             line: lyric.line,
             start: lyric.start,
             end: lyric.end,
           }))
-        : lyrics.split("\n").map((line) => ({
-            line,
-            start: 0,
-            end: 0,
-          })),
+        : lyrics.split("\n").map((line) => ({ line, start: 0, end: 0 })),
     };
 
-    // undefined 값이 있는지 확인
-    const undefinedKeys = Object.keys(saveData).filter(
-      (key) => saveData[key] === undefined
-    );
-
-    if (undefinedKeys.length > 0) {
-      message.error(`다음 항목이 비어 있습니다: ${undefinedKeys.join(", ")}`);
-      return; // undefined 값이 있을 경우 저장을 중단
-    }
-
-    // undefined 값이 없다면 저장 진행
-    console.log("저장할 데이터:", saveData);
-    // 실제 저장 코드 추가
     try {
-      await addTrack.addData(saveData);
-      message.success(`${saveData.title}을 추가했습니다.`);
+      await updateData(trackId, saveData);
+      message.success(`${saveData.title}이 성공적으로 업데이트되었습니다.`);
     } catch (error) {
-      message.error(`트랙추가에 실패했습니다: ${error}`);
+      message.error(`트랙 업데이트에 실패했습니다: ${error}`);
     }
   };
 
@@ -279,7 +209,11 @@ const AudioEditor = () => {
         <Input
           value={record.line}
           onChange={(e) =>
-            handleEditableLyricsChange(index, "line", e.target.value)
+            setEditableLyrics((prevLyrics) =>
+              prevLyrics.map((lyric, i) =>
+                i === index ? { ...lyric, line: e.target.value } : lyric
+              )
+            )
           }
         />
       ),
@@ -294,10 +228,12 @@ const AudioEditor = () => {
           step="0.1"
           value={record.start}
           onChange={(e) =>
-            handleEditableLyricsChange(
-              index,
-              "start",
-              parseFloat(e.target.value)
+            setEditableLyrics((prevLyrics) =>
+              prevLyrics.map((lyric, i) =>
+                i === index
+                  ? { ...lyric, start: parseFloat(e.target.value) }
+                  : lyric
+              )
             )
           }
           style={{ width: 70 }}
@@ -314,36 +250,16 @@ const AudioEditor = () => {
           step="0.1"
           value={record.end}
           onChange={(e) =>
-            handleEditableLyricsChange(index, "end", parseFloat(e.target.value))
+            setEditableLyrics((prevLyrics) =>
+              prevLyrics.map((lyric, i) =>
+                i === index
+                  ? { ...lyric, end: parseFloat(e.target.value) }
+                  : lyric
+              )
+            )
           }
           style={{ width: 70 }}
         />
-      ),
-    },
-    {
-      title: "작업",
-      key: "action",
-      render: (_, __, index) => (
-        <div>
-          <Tooltip title="추가">
-            <Button
-              onClick={() => handleAddRow(index)}
-              icon={<PlusOutlined />}
-              style={{
-                marginRight: 8,
-                backgroundColor: "#52c41a",
-                color: "white",
-              }}
-            />
-          </Tooltip>
-          <Tooltip title="삭제">
-            <Button
-              onClick={() => handleDeleteRow(index)}
-              icon={<DeleteOutlined />}
-              style={{ backgroundColor: "#ff2c36", color: "white" }}
-            />
-          </Tooltip>
-        </div>
       ),
     },
   ];
@@ -351,7 +267,7 @@ const AudioEditor = () => {
   return (
     <div className="p-4 w-full" style={{ maxWidth: 1200, margin: "0 auto" }}>
       <Card
-        title="Audio Editor"
+        title="Track Editor"
         bordered={false}
         style={{ maxWidth: 1200, margin: "0 auto" }}
       >
@@ -410,15 +326,12 @@ const AudioEditor = () => {
             </Select>
           </Form.Item>
           <div className="flex flex-col mb-4">
-            <Upload
-              beforeUpload={handleUploadAlbumArt} // 앨범 아트 업로드 시 업로드 함수 호출
-              showUploadList={false}
-            >
+            <Upload beforeUpload={handleUploadAlbumArt} showUploadList={false}>
               <Button icon={<UploadOutlined />}>앨범 아트 업로드</Button>
             </Upload>
             {albumArt && (
               <Image
-                src={URL.createObjectURL(albumArt)}
+                src={albumArt}
                 alt="Album Art Preview"
                 width={200}
                 style={{ marginTop: 16 }}
@@ -429,6 +342,7 @@ const AudioEditor = () => {
             <Input.TextArea
               rows={8}
               placeholder="가사 입력"
+              value={lyrics}
               onChange={handleLyricsChange}
             />
           </Form.Item>
@@ -441,18 +355,13 @@ const AudioEditor = () => {
             </Checkbox>
           </Form.Item>
           {timelineEnabled && (
-            <div>
-              <Button onClick={handleResetLyrics} style={{ marginBottom: 16 }}>
-                초기화
-              </Button>
-              <Table
-                dataSource={editableLyrics}
-                columns={columns}
-                pagination={false}
-                rowKey={(record, index) => `${record.line}-${index}`}
-                style={{ marginTop: 16 }}
-              />
-            </div>
+            <Table
+              dataSource={editableLyrics}
+              columns={columns}
+              pagination={false}
+              rowKey={(record, index) => `${record.line}-${index}`}
+              style={{ marginTop: 16 }}
+            />
           )}
           <Form.Item style={{ marginTop: 16 }}>
             <Button type="primary" htmlType="submit" block>
@@ -465,4 +374,4 @@ const AudioEditor = () => {
   );
 };
 
-export default AudioEditor;
+export default TrackEditor;

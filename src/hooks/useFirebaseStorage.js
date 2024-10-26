@@ -1,4 +1,6 @@
-import { useState, useEffect } from "react";
+// useFirebaseStorage Hook
+
+import { useState } from "react";
 import {
   getStorage,
   ref,
@@ -6,12 +8,12 @@ import {
   getDownloadURL,
 } from "firebase/storage";
 
-const useFirebaseStorage = (files, storagePath) => {
+const useFirebaseStorage = (storagePath) => {
   const [progress, setProgress] = useState(0);
   const [urls, setUrls] = useState([]);
   const [errors, setErrors] = useState([]);
 
-  useEffect(() => {
+  const uploadFiles = (files) => {
     if (!files || files.length === 0) return;
 
     const storage = getStorage();
@@ -52,9 +54,9 @@ const useFirebaseStorage = (files, storagePath) => {
       .catch((error) => {
         console.error("File upload failed:", error);
       });
-  }, [files, storagePath]);
+  };
 
-  return { progress, urls, errors };
+  return { progress, urls, errors, uploadFiles };
 };
 
 export default useFirebaseStorage;
