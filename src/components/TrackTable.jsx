@@ -83,11 +83,12 @@ const TrackTable = ({
   };
 
   const handleAddSingleTrack = (track) => {
+    console.log(track);
     if (!track) {
       message.error("추가할 트랙이 존재하지 않습니다.");
       return;
     }
-    onAddToPlaylist(track.id);
+    onAddToPlaylist(track);
   };
 
   // 모바일 버전 렌더링

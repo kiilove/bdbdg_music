@@ -1,3 +1,4 @@
+// src/components/AudioPlayer.jsx
 import React, { useEffect, useState, useRef } from "react";
 import { Slider, Button, List, message } from "antd";
 import {
@@ -10,13 +11,26 @@ import {
   SwapOutlined,
 } from "@ant-design/icons";
 
-const AudioPlayer = ({ playlist, autoPlay = true }) => {
-  const [currentIndex, setCurrentIndex] = useState(0);
+const AudioPlayer = ({
+  playlist,
+  autoPlay = true,
+  forceIndex = 0,
+  forceStartTime = 0,
+  onPlaylistChange, // 부모 컴포넌트로 현재 상태를 전달하는 콜백
+}) => {
+  const [localPlaylist, setLocalPlaylist] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(forceIndex);
   const [isPlaying, setIsPlaying] = useState(autoPlay);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playMode, setPlayMode] = useState("all");
   const audioRef = useRef(new Audio());
+
+  // 중복 호출 방지를 위한 플래그
+  const nextTrackTriggeredRef = useRef(false);
+
+  // duration 값을 즉시 접근 가능하도록 useRef 사용
+  const durationRef = useRef(0);
 
   const playModeIcons = {
     all: <RetweetOutlined />,
@@ -31,31 +45,52 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
   };
 
   const currentTrack =
-    playlist && playlist.length > 0 ? playlist[currentIndex] : null;
+    localPlaylist && localPlaylist.length > 0
+      ? localPlaylist[currentIndex]
+      : null;
 
-  const loadTrack = (track, playImmediately = false) => {
+  const loadTrack = (track, playImmediately = false, startTime = 0) => {
     if (!track) {
+      console.error("재생할 트랙이 없습니다.");
       message.error("재생할 트랙이 없습니다.");
       return;
     }
 
     const audio = audioRef.current;
+    nextTrackTriggeredRef.current = false;
+
     audio.src = track.path;
-    audio.currentTime = track.startTime || 0;
-    audio.load();
+    audio.currentTime = track.startTime + startTime || 0;
 
     audio.onloadedmetadata = () => {
-      const trackDuration =
-        (track.endTime || audio.duration) - (track.startTime || 0);
+      const trackDuration = track.playingTime
+        ? parseFloat(track.playingTime)
+        : track.endTime
+        ? track.endTime - (track.startTime || 0)
+        : audio.duration;
+
       setDuration(trackDuration > 0 ? trackDuration : audio.duration);
-      setCurrentTime(0);
+      durationRef.current = trackDuration > 0 ? trackDuration : audio.duration;
+      setCurrentTime(startTime);
 
       audio.ontimeupdate = () => {
         const elapsed = audio.currentTime - (track.startTime || 0);
         setCurrentTime(elapsed);
+
+        if (
+          !nextTrackTriggeredRef.current &&
+          elapsed >= durationRef.current - 0.5
+        ) {
+          nextTrackTriggeredRef.current = true;
+          handleNext();
+        }
       };
 
-      audio.onended = () => handleNext();
+      audio.onended = () => {
+        if (!nextTrackTriggeredRef.current) {
+          handleNext();
+        }
+      };
 
       if (playImmediately) {
         audio.play().catch((error) => {
@@ -64,6 +99,11 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
           message.error("트랙을 재생하는 중 오류가 발생했습니다.");
         });
       }
+    };
+
+    audio.onerror = (e) => {
+      console.error(`Error loading track "${track.title}":`, e);
+      message.error(`트랙 로딩 중 오류가 발생했습니다: ${track.title}`);
     };
   };
 
@@ -79,35 +119,62 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
     } else {
       audio.pause();
     }
-  }, [isPlaying]);
+  }, [isPlaying, currentTrack]);
 
   useEffect(() => {
     if (!currentTrack) return;
-    loadTrack(currentTrack, isPlaying);
-  }, [currentTrack]);
+    loadTrack(currentTrack, isPlaying, forceStartTime);
+  }, [currentTrack, forceStartTime]);
 
   useEffect(() => {
     const audio = audioRef.current;
+
+    const isPlaylistChanged = playlist !== localPlaylist;
+
+    // 이전 상태를 부모에게 전달
+    if (isPlaylistChanged && onPlaylistChange && currentTrack) {
+      const playbackInfo = {
+        currentPlaylistId: localPlaylist?.id || null,
+        currentTrackId: localPlaylist[currentIndex]?.id || null,
+        currentTrackTitle: localPlaylist[currentIndex]?.title || "",
+        currentTime: currentTime,
+        currentIndex,
+      };
+      console.log(
+        "Sending playback info to parent before playlist change:",
+        playbackInfo
+      );
+      onPlaylistChange(playbackInfo);
+    }
+
+    // 새로운 playlist를 로컬로 저장
+    if (isPlaylistChanged) {
+      setLocalPlaylist(playlist);
+    }
+
     audio.pause();
     setCurrentTime(0);
     setDuration(0);
+    durationRef.current = 0;
 
-    if (playlist && playlist.length > 0) {
-      setCurrentIndex(0);
-      if (autoPlay) {
-        setIsPlaying(true);
+    setTimeout(() => {
+      if (playlist && playlist.length > 0) {
+        setCurrentIndex(forceIndex);
+        if (autoPlay) {
+          setIsPlaying(true);
+        } else {
+          setIsPlaying(false);
+        }
       } else {
         setIsPlaying(false);
       }
-    } else {
-      setIsPlaying(false);
-    }
+    }, 500);
 
     return () => {
       audio.pause();
       audio.src = "";
     };
-  }, [playlist]);
+  }, [playlist, forceIndex]);
 
   const handlePlayPause = () => {
     if (!currentTrack) {
@@ -117,53 +184,33 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
     setIsPlaying(!isPlaying);
   };
 
-  // 다음 트랙 핸들러
   const handleNext = () => {
-    if (!playlist || playlist.length === 0) return;
+    if (!localPlaylist || localPlaylist.length === 0) return;
 
-    const isLastTrack = currentIndex >= playlist.length - 1;
+    const isLastTrack = currentIndex >= localPlaylist.length - 1;
 
     switch (playMode) {
       case "all":
-        if (!isLastTrack) {
-          setCurrentIndex(currentIndex + 1);
-        } else {
-          setCurrentIndex(0); // 전체 반복에서는 마지막 트랙 후 첫 번째 트랙으로 돌아갑니다.
-        }
+        setCurrentIndex(isLastTrack ? 0 : currentIndex + 1);
         break;
-
       case "one":
-        // 현재 곡을 다시 로드해서 한 곡 반복
-        loadTrack(currentTrack);
-        setIsPlaying(true);
+        loadTrack(currentTrack, true);
         break;
-
       case "shuffle":
-        if (playlist.length > 1) {
-          let newIndex = Math.floor(Math.random() * playlist.length);
-          while (newIndex === currentIndex) {
-            newIndex = Math.floor(Math.random() * playlist.length);
-          }
-          setCurrentIndex(newIndex);
-        } else {
-          loadTrack(currentTrack);
-          setIsPlaying(true);
+        let newIndex = Math.floor(Math.random() * localPlaylist.length);
+        while (newIndex === currentIndex) {
+          newIndex = Math.floor(Math.random() * localPlaylist.length);
         }
+        setCurrentIndex(newIndex);
         break;
-
       default:
         message.error("알 수 없는 재생 모드입니다.");
-        break;
     }
   };
 
   const handlePrevious = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
-      setIsPlaying(true);
-    } else {
-      message.warning("이전 트랙이 없습니다.");
-    }
+    setCurrentIndex(currentIndex > 0 ? currentIndex - 1 : 0);
+    setIsPlaying(true);
   };
 
   const handleSliderChange = (value) => {
@@ -175,8 +222,7 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
 
   const handleChangePlayMode = () => {
     const modes = ["all", "one", "shuffle"];
-    const currentModeIndex = modes.indexOf(playMode);
-    const nextMode = modes[(currentModeIndex + 1) % modes.length];
+    const nextMode = modes[(modes.indexOf(playMode) + 1) % modes.length];
     setPlayMode(nextMode);
     message.info(`${playModeTitles[nextMode]} 모드로 변경되었습니다.`);
   };
@@ -203,7 +249,6 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
           icon={<StepBackwardOutlined style={{ fontSize: "32px" }} />}
           onClick={handlePrevious}
           size="large"
-          style={{ borderRadius: "8px", border: "2px solid #ddd" }}
         />
         <Button
           icon={
@@ -217,19 +262,16 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
           size="large"
           type="primary"
           shape="circle"
-          style={{ borderRadius: "50%", border: "2px solid #ddd" }}
         />
         <Button
           icon={<StepForwardOutlined style={{ fontSize: "32px" }} />}
           onClick={handleNext}
           size="large"
-          style={{ borderRadius: "8px", border: "2px solid #ddd" }}
         />
         <Button
           icon={playModeIcons[playMode]}
           onClick={handleChangePlayMode}
           size="large"
-          style={{ borderRadius: "8px", border: "2px solid #ddd" }}
         />
       </div>
 
@@ -237,7 +279,6 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
         value={currentTime}
         max={duration}
         onChange={handleSliderChange}
-        className="mb-4"
       />
       <div className="flex justify-between text-sm">
         <span>{formatTime(currentTime)}</span>
@@ -246,17 +287,13 @@ const AudioPlayer = ({ playlist, autoPlay = true }) => {
 
       <List
         size="small"
-        dataSource={playlist}
+        dataSource={localPlaylist}
         renderItem={(track, index) => (
           <List.Item
-            className={`cursor-pointer ${
-              index === currentIndex ? "bg-blue-100" : ""
-            }`}
-            onClick={() => setCurrentIndex(index)}
-            style={{
-              padding: "8px 16px",
-              borderBottom: "1px solid #f0f0f0",
-              backgroundColor: index === currentIndex ? "#e6f7ff" : "white",
+            className={index === currentIndex ? "bg-blue-100" : ""}
+            onClick={() => {
+              setCurrentIndex(index);
+              setIsPlaying(true);
             }}
           >
             {index === currentIndex && isPlaying && (

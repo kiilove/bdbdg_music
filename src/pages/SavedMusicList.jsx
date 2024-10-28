@@ -349,6 +349,8 @@ const SavedMusicList = () => {
         setPlaylists((prev) => [...prev, newPlaylist]);
         message.success("새 플레이리스트가 생성되었습니다.");
       } else if (selectedPlaylist) {
+        console.log(selectedPlaylist);
+        console.log(selectedTrackIds);
         // 기존 플레이리스트에 트랙 추가
         const playlist = playlists.find((p) => p.id === selectedPlaylist);
         if (playlist) {
