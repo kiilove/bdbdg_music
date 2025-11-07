@@ -36,3 +36,11 @@
     transform: rotate(360deg);
   }
 }
+
+.ant-modal-wrap [data-rbd-draggable-context-id] {
+  /* top, left 속성을 자동(auto)으로 설정하여,
+       rbd가 드래그 중 적용하는 position: fixed의
+       잘못된 좌표 계산을 오버라이드합니다. */
+  top: auto !important;
+  left: auto !important;
+}

@@ -9,6 +9,7 @@ import SavedMusicList from "./pages/SavedMusicList";
 import TrackEditor from "./pages/TrackEditor";
 import PlaylistDetail from "./pages/PlaylistDetail";
 import AudioController from "./pages/AudioController";
+import PlayList from "./pages/PlayList";
 
 const { Header, Content, Footer } = Layout;
 
@@ -23,7 +24,7 @@ const App = () => {
                 <Link to="/explorer">파일 탐색</Link>
               </Menu.Item>
               <Menu.Item key="2">
-                <Link to="/tracklist">트랙 목록</Link>
+                <Link to="/playlist">플레이리스트</Link>
               </Menu.Item>
               <Menu.Item key="3">
                 <Link to="/controller">오디오컨트롤러</Link>
@@ -35,7 +36,9 @@ const App = () => {
           <Content className="p-4 bg-gray-100">
             <Routes>
               <Route path="/explorer" element={<MusicExplorer />} />
-              <Route path="/tracklist" element={<SavedMusicList />} />
+              <Route path="/playlist" element={<PlayList />} />
+
+              {/* <Route path="/tracklist" element={<SavedMusicList />} /> */}
               <Route path="/track-editor/:trackId" element={<TrackEditor />} />
               <Route path="/playlist-detail" element={<PlaylistDetail />} />
 

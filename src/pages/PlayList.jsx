@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Card,
   List,
@@ -11,23 +11,32 @@ import {
   Space,
   Button,
   Tag,
+  Popconfirm,
 } from "antd";
 import {
   PlayCircleOutlined,
   PauseCircleOutlined,
   FolderOpenOutlined,
   EditOutlined,
-  NumberOutlined,
+  DeleteOutlined,
 } from "@ant-design/icons";
 import { db } from "../firebase";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
+import {
+  collection,
+  onSnapshot,
+  query,
+  orderBy,
+  getDocs,
+  deleteDoc,
+  doc,
+} from "firebase/firestore";
 import ReactH5AudioPlayer from "react-h5-audio-player";
 import "react-h5-audio-player/lib/styles.css";
-import PlaylistModal from "../components/PlaylistModal";
+import PlaylistEditor from "../components/PlaylistEditModal";
 
 const { Title, Text } = Typography;
 
-export default function SavedMusicList() {
+export default function PlayList() {
   const [playlists, setPlaylists] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedTrack, setSelectedTrack] = useState(null);
@@ -35,59 +44,63 @@ export default function SavedMusicList() {
   const [editingPlaylistId, setEditingPlaylistId] = useState(null);
   const audioRef = useRef(null);
 
-  // 🔹 Firestore 실시간 구독
+  // 🔹 Firestore에서 전체 재생목록 구독 (트랙 개수 포함)
   useEffect(() => {
     const ref = collection(db, "track_play_list");
+    const q = query(ref, orderBy("createdAt", "desc"));
+
     const unsub = onSnapshot(
-      ref,
+      q,
       async (snap) => {
-        const all = await Promise.all(
-          snap.docs.map(async (docSnap) => {
-            const data = docSnap.data();
-            const trackRef = collection(
-              db,
-              "track_play_list",
-              docSnap.id,
-              "tracks"
-            );
-            const trackSnap = await onSnapshot(
-              query(trackRef, orderBy("playIndex", "asc")),
-              () => {} // 개별 실시간 업데이트는 Modal에서 처리하므로 생략
-            );
-            return { id: docSnap.id, ...data };
-          })
-        );
-        setPlaylists(all);
-        setLoading(false);
+        try {
+          const listWithCounts = await Promise.all(
+            snap.docs.map(async (d) => {
+              const data = d.data();
+              const tracksRef = collection(
+                db,
+                "track_play_list",
+                d.id,
+                "tracks"
+              );
+              const trackSnap = await getDocs(tracksRef);
+              const trackCount = trackSnap.size;
+
+              return {
+                id: d.id,
+                ...data,
+                trackCount,
+              };
+            })
+          );
+          setPlaylists(listWithCounts);
+        } catch (e) {
+          console.error("트랙 개수 계산 실패:", e);
+          message.error("플레이리스트를 불러오는 중 오류가 발생했습니다.");
+        } finally {
+          setLoading(false);
+        }
       },
-      (error) => {
-        console.error("플레이리스트 구독 실패:", error);
+      (err) => {
+        console.error(err);
         message.error("플레이리스트를 불러오지 못했습니다.");
         setLoading(false);
       }
     );
+
     return () => unsub();
   }, []);
 
-  // 🔹 트랙 재생 처리
-  const handlePlayTrack = (track) => {
-    if (selectedTrack?.url === track.url && isPlaying) {
-      setIsPlaying(false);
-    } else {
-      setSelectedTrack(track);
-      setIsPlaying(true);
-    }
-  };
-
-  // 🔹 전체 재생
   const handlePlayAll = async (playlistId) => {
     try {
-      const res = await fetch(`/api/playlist/${playlistId}`);
-      const { tracks } = await res.json();
-      if (!tracks?.length) {
+      const tracksRef = collection(db, "track_play_list", playlistId, "tracks");
+      const snap = await getDocs(query(tracksRef, orderBy("playIndex", "asc")));
+      const tracks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      if (tracks.length === 0) {
         message.warning("트랙이 없습니다.");
         return;
       }
+
       setSelectedTrack(tracks[0]);
       setIsPlaying(true);
     } catch (err) {
@@ -96,17 +109,6 @@ export default function SavedMusicList() {
     }
   };
 
-  // 🔹 수정 모달 열기
-  const handleEditPlaylist = (playlistId) => {
-    setEditingPlaylistId(playlistId);
-  };
-
-  // 🔹 모달 닫기
-  const handleCloseModal = () => {
-    setEditingPlaylistId(null);
-  };
-
-  // 🔹 재생 정지 시 자동 중단
   useEffect(() => {
     if (!isPlaying) {
       try {
@@ -115,17 +117,28 @@ export default function SavedMusicList() {
     }
   }, [isPlaying]);
 
+  const handleDeletePlaylist = async (playlistId) => {
+    try {
+      await deleteDoc(doc(db, "track_play_list", playlistId));
+      message.success("플레이리스트가 삭제되었습니다.");
+    } catch (err) {
+      console.error(err);
+      message.error("삭제 중 오류가 발생했습니다.");
+    }
+  };
+
+  const handleCloseEditor = () => setEditingPlaylistId(null);
+
   return (
-    <div style={{ padding: 16 }}>
+    <div style={{ padding: 24 }}>
       <Title level={3} style={{ marginBottom: 16 }}>
-        저장된 플레이리스트
+        플레이리스트 관리
       </Title>
 
-      {/* 🔊 현재 재생 중 */}
       {selectedTrack && (
         <Card
-          title="Now Playing"
           size="small"
+          title={`Now Playing: ${selectedTrack.name}`}
           style={{ marginBottom: 16 }}
           extra={
             <Button
@@ -138,7 +151,6 @@ export default function SavedMusicList() {
             </Button>
           }
         >
-          <Text strong>{selectedTrack.name}</Text>
           <ReactH5AudioPlayer
             ref={audioRef}
             src={selectedTrack.url}
@@ -147,12 +159,10 @@ export default function SavedMusicList() {
             showJumpControls={false}
             customAdditionalControls={[]}
             layout="horizontal"
-            style={{ marginTop: 8 }}
           />
         </Card>
       )}
 
-      {/* 🔹 플레이리스트 목록 */}
       {loading ? (
         <Spin
           size="large"
@@ -182,31 +192,42 @@ export default function SavedMusicList() {
                     <Button
                       type="text"
                       icon={<PlayCircleOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handlePlayAll(playlist.id);
-                      }}
+                      onClick={() => handlePlayAll(playlist.id)}
                     >
                       전체 재생
                     </Button>
                     <Button
                       type="text"
                       icon={<EditOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEditPlaylist(playlist.id);
-                      }}
+                      onClick={() => setEditingPlaylistId(playlist.id)}
                     >
                       수정
                     </Button>
+                    <Popconfirm
+                      title="플레이리스트를 삭제할까요?"
+                      onConfirm={() => handleDeletePlaylist(playlist.id)}
+                      okText="삭제"
+                      cancelText="취소"
+                    >
+                      <Button type="text" icon={<DeleteOutlined />} danger>
+                        삭제
+                      </Button>
+                    </Popconfirm>
                   </Space>
                 }
-                style={{ cursor: "pointer", borderRadius: 10 }}
+                style={{ cursor: "default", borderRadius: 10 }}
               >
                 <Space direction="vertical">
-                  <Tag color="blue">{playlist.description || "Custom"}</Tag>
+                  <Tag color="blue">
+                    {playlist.trackCount > 0
+                      ? `${playlist.trackCount}곡`
+                      : "0곡"}
+                  </Tag>
                   <Text type="secondary">
-                    트랙 수: {playlist.tracks?.length || 0}
+                    생성일:{" "}
+                    {playlist.createdAt?.toDate
+                      ? playlist.createdAt.toDate().toLocaleString()
+                      : "알 수 없음"}
                   </Text>
                 </Space>
               </Card>
@@ -215,12 +236,11 @@ export default function SavedMusicList() {
         />
       )}
 
-      {/* ✏️ 플레이리스트 수정 모달 */}
       {editingPlaylistId && (
-        <PlaylistModal
+        <PlaylistEditor
           open={!!editingPlaylistId}
-          onClose={handleCloseModal}
           playlistId={editingPlaylistId}
+          onClose={handleCloseEditor}
         />
       )}
     </div>
